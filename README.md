@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 项目名称 | 面向 LLM 推理负载的 KV Cache 分层管理与优化系统（MiniFlex） |
+| 赛题 | proj21——面向AI推理负载的异构存储管理系统优化 |
 | 参赛队伍 | 古法编程继承人 |
 | 团队成员 | 井光成、徐子淳、祁馨叶 |
 | 参赛学校 | 西安邮电大学 |
@@ -138,7 +138,7 @@ MiniFlex 的核心价值不只是追求容量内最快，其在追求 **越过 G
 
 ## 六、快速启动
 
-更完整的环境说明、配置说明与常见问题见 `docs/usage.md`。
+更完整的环境说明、配置说明与常见问题见 `miniflex/docs/usage.md`。
 
 如果只是想快速拉起项目并验证功能，建议按下面步骤进行。
 
@@ -238,9 +238,9 @@ curl -s http://localhost:8000/v1/completions \
 
 - 启动脚本：`run_vllm_miniflex.sh`
 - 一键演示：`demo.sh`
-- 使用说明：`docs/usage.md`
-- 结构说明：`docs/project_structure.md`
-- 验证报告：`docs/validation.md`
+- 使用说明：`miniflex/docs/usage.md`
+- 结构说明：`miniflex/docs/project_structure.md`
+- 验证报告：`miniflex/docs/validation.md`
 
 ## 七、测试与演示
 
@@ -285,37 +285,41 @@ PYTHONPATH=pysrc python bench_mixed.py --url http://localhost:8000 --tag both
 
 ### 7.3 测试材料位置
 
-- 测试总览与 AI 交互记录：`docs/test_overview.md`
-- 验证报告：`docs/validation.md`
-- 测试代码目录：`test/`
+- 测试总览与 AI 交互记录：`miniflex/docs/test_overview.md`
+- 验证报告：`miniflex/docs/validation.md`
+- 测试代码目录：`miniflex/test/`
 
 ## 八、仓库结构
 
 ```text
-miniflex/
+project-21/
 ├── README.md
-├── csrc/                      # C++ / CUDA 扩展
-├── docs/                      # 设计文档、结构说明、使用说明、验证报告
-├── pysrc/miniflex/            # Python 主体实现
-├── test/                      # 单元测试与功能验证
-├── bench_ttft.py              # 长上下文 TTFT 测试
-├── bench_overflow.py          # 超容量工作集测试
-├── bench_mixed.py             # 混合负载测试
-├── demo.sh                    # 一键演示脚本
-├── run_vllm_miniflex.sh       # 启动 vLLM + MiniFlex 脚本
-├── pyproject.toml
-└── setup.py
+├── 设计开发文档.md
+├── image/                     # 说明图、PR 截图等展示材料
+├── miniflex/
+│   ├── csrc/                  # C++ / CUDA 扩展
+│   ├── docs/                  # 结构说明、使用说明、验证报告等
+│   ├── pysrc/miniflex/        # Python 主体实现
+│   ├── test/                  # 单元测试与功能验证
+│   ├── bench_ttft.py          # 长上下文 TTFT 测试
+│   ├── bench_overflow.py      # 超容量工作集测试
+│   ├── bench_mixed.py         # 混合负载测试
+│   ├── demo.sh                # 一键演示脚本
+│   ├── run_vllm_miniflex.sh   # 启动 vLLM + MiniFlex 脚本
+│   ├── pyproject.toml
+│   └── setup.py
+└── 归档-日志-调研-测试/         # 历史测试、调研材料与归档脚本
 ```
 
 ### 8.1 核心代码说明
 
-- `pysrc/miniflex/integration/vllm/connector.py`：MiniFlex 接入 vLLM 的入口；
-- `pysrc/miniflex/kvtask.py`：KV 任务组织与编排；
-- `pysrc/miniflex/cache/`：逻辑缓存管理；
-- `pysrc/miniflex/storage/`：物理存储与分配；
-- `pysrc/miniflex/transfer/`：传输调度与 worker；
-- `csrc/transfer.cu`：GPU ↔ CPU 传输实现；
-- `csrc/ssd_io_uring.cpp`：SSD I/O 后端实现。
+- `miniflex/pysrc/miniflex/integration/vllm/connector.py`：MiniFlex 接入 vLLM 的入口；
+- `miniflex/pysrc/miniflex/kvtask.py`：KV 任务组织与编排；
+- `miniflex/pysrc/miniflex/cache/`：逻辑缓存管理；
+- `miniflex/pysrc/miniflex/storage/`：物理存储与分配；
+- `miniflex/pysrc/miniflex/transfer/`：传输调度与 worker；
+- `miniflex/csrc/transfer.cu`：GPU ↔ CPU 传输实现；
+- `miniflex/csrc/ssd_io_uring.cpp`：SSD I/O 后端实现。
 
 
 
@@ -355,9 +359,14 @@ miniflex/
 | PR（已合并） | `#187` | vLLM 0.23+ non-MLA `LAYERBLOCK` 兼容适配 | 适配新版本 vLLM 的 GPU KV layout 变化，保证传输与布局正确性 |
 | Issue（讨论） | `#161` | `FLEXKV_SYNC_GET=1` 同步路径任务字典未清理 | 报告并讨论同步 GET 模式下的任务管理问题，辅助后续修复 |
 
+部分 PR 工作示例如下：
+
+| PR #174：`_set_slot_mapping_impl` 映射修复 | PR #172：`TransferWorker.run()` shutdown 处理 |
+| :--: | :--: |
+| ![PR #174 示例](./image/PR图片/微信图片_20260628212721.png) | ![PR #172 示例](./image/PR图片/微信图片_20260628212753.png) |
+
 比赛提交要求中的设计文档、非本队来源说明、开源协议状态说明、AI 工具使用说明等内容，统一整理在以下文档中：
 
-- `docs/设计开发文档.md`
-- `docs/test_overview.md`
+- `设计开发文档.md`
+- `miniflex/docs/test_overview.md`
 
-当前 `README` 主要承担仓库入口、项目概览、启动说明和文档导航的职责；更完整的比赛材料请以 `docs/` 目录中的文档为准。
