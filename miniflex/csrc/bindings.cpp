@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 
+#include "gds_io.h"
 #include "ssd_io_uring.h"
 #include "transfer.cuh"
 
@@ -29,6 +30,45 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
            pybind11::arg("dst_block_ids"),
            pybind11::arg("is_read"))
       .def("is_using_io_uring", &miniflex::SSDIOCTX::is_using_io_uring);
+
+  pybind11::class_<miniflex::GDSIOCTX>(m, "GDSIOCTX")
+      .def(pybind11::init([](int64_t blocks_per_file,
+                             std::vector<torch::Tensor> gpu_tensors,
+                             int64_t layer_num,
+                             int64_t kv_dim,
+                             int64_t gpu_num_blocks,
+                             int64_t slice_bytes,
+                             int64_t gpu_block_step,
+                             int64_t gpu_kv_pitch,
+                             std::vector<std::string> file_paths) {
+             if (static_cast<int64_t>(gpu_tensors.size()) != layer_num) {
+               throw std::invalid_argument(
+                   "gpu_tensors length must equal layer_num");
+             }
+             std::vector<char*> gpu_ptrs;
+             gpu_ptrs.reserve(gpu_tensors.size());
+             for (auto& t : gpu_tensors) {
+               gpu_ptrs.push_back(static_cast<char*>(t.data_ptr()));
+             }
+             return std::make_unique<miniflex::GDSIOCTX>(
+                 blocks_per_file, gpu_ptrs, layer_num, kv_dim, gpu_num_blocks,
+                 slice_bytes, gpu_block_step, gpu_kv_pitch, file_paths);
+           }),
+           pybind11::arg("blocks_per_file"),
+           pybind11::arg("gpu_tensors"),
+           pybind11::arg("layer_num"),
+           pybind11::arg("kv_dim"),
+           pybind11::arg("gpu_num_blocks"),
+           pybind11::arg("slice_bytes"),
+           pybind11::arg("gpu_block_step"),
+           pybind11::arg("gpu_kv_pitch"),
+           pybind11::arg("file_paths"))
+      .def("transfer_blocks",
+           &miniflex::GDSIOCTX::transfer_blocks,
+           pybind11::arg("src_block_ids"),
+           pybind11::arg("dst_block_ids"),
+           pybind11::arg("is_read"))
+      .def("is_available", &miniflex::GDSIOCTX::is_available);
 
   pybind11::class_<miniflex::GPUCPUTransferCTX>(m, "GPUCPUTransferCTX")
       .def(pybind11::init([](std::vector<torch::Tensor> cpu_tensors,
