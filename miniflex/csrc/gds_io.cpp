@@ -6,6 +6,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+// O_DIRECT is Linux-specific (GDS itself is Linux-only); on other platforms
+// (e.g. macOS dev machines) fall back to buffered open so the file still
+// compiles and the stub path remains testable.
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+
 // cuFile is optional: when MINIFLEX_WITH_CUFILE is defined at build time and
 // the headers are present we compile the real GDS path; otherwise the class
 // is a stub that reports is_available()==false so the Python worker falls
