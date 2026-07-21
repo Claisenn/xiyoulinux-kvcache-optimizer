@@ -324,7 +324,6 @@ class GPUCPUTransferWorker(TransferWorkerBase):
     elif isinstance(self.cpu_storage_handle.data, list):
       for tensor in self.cpu_storage_handle.get_tensor_list():
         self._register_cuda_host_tensor(tensor)
-    self.gpu_stream = torch.cuda.Stream()
 
     # CE 路径:逐块 cudaMemcpy2DAsync 下放到 C++(GPUCPUTransferCTX)。
     # CPU/GPU 都按 per-layer 指针 + 字节跨距传入,布局(LAYERFIRST/LAYERBLOCK)
@@ -495,9 +494,7 @@ class GPUCPUTransferWorker(TransferWorkerBase):
 
   def launch_transfer(self,transfer_op: WorkerTransferOp) -> bool:
     src_block_ids, dst_block_ids = self.get_transfer_block_ids(transfer_op)
-    with torch.cuda.stream(self.gpu_stream):
-      self._transfer_impl(src_block_ids, dst_block_ids, transfer_op.transfer_type)
-    self.gpu_stream.synchronize()
+    self._transfer_impl(src_block_ids, dst_block_ids, transfer_op.transfer_type)
     return True
 
 
@@ -602,13 +599,12 @@ class SSDCPUTransferWorker(TransferWorkerBase):
     return bool(self._transfer_impl(src_block_ids, dst_block_ids, transfer_op.transfer_type))
 
 
-class GPUDirectSSDTransferWorker(TransferWorkerBase):
+class GDSTransferWorker(TransferWorkerBase):
   """GPU <-> SSD direct transfer worker using GPU Direct Storage (cuFile).
 
   Handles D2DISK (GPU -> SSD) and DISK2D (SSD -> GPU) ops without staging
-  through CPU memory.  When the underlying ``_C.GDSIOCTX`` reports
-  ``is_available() == False`` (cuFile missing at build/run time), transfers
-  return False so the engine can fall back to the CPU two-hop path.
+  through CPU memory. This worker does not perform a CPU two-hop fallback:
+  an unavailable or failed ``_C.GDSIOCTX`` transfer raises ``RuntimeError``.
   """
 
   def __init__(self,
@@ -623,7 +619,10 @@ class GPUDirectSSDTransferWorker(TransferWorkerBase):
     self.ssd_storage_handle = ssd_storage_handle
     gpu_layout = gpu_storage_handle.kv_layout
     ssd_layout = ssd_storage_handle.kv_layout
-    if gpu_storage_handle.handle_type != StorageHandlerType.TENSOR:
+    if gpu_storage_handle.handle_type not in (
+        StorageHandlerType.TENSOR,
+        StorageHandlerType.TENSOR_HANDLE,
+    ):
       raise ValueError("GPU storage handle must be tensor-backed for GDS")
     if ssd_storage_handle.handle_type != StorageHandlerType.FILE:
       raise ValueError("SSD storage handle must be file-backed for GDS")
@@ -655,6 +654,27 @@ class GPUDirectSSDTransferWorker(TransferWorkerBase):
     self.gpu_layout = gpu_layout
 
     self.gpu_tensors_list = GPUCPUTransferWorker._get_tensor_list(gpu_storage_handle)
+    if not self.gpu_tensors_list:
+      raise ValueError("GPU storage must provide at least one layer tensor")
+    gpu_device = self.gpu_tensors_list[0].device
+    for layer_id, tensor in enumerate(self.gpu_tensors_list):
+      if not tensor.is_cuda:
+        raise ValueError(f"GPU tensor at layer {layer_id} must be on CUDA")
+      if not tensor.is_contiguous():
+        raise ValueError(f"GPU tensor at layer {layer_id} must be contiguous for GDS")
+      if tensor.numel() == 0:
+        raise ValueError(f"GPU tensor at layer {layer_id} must be non-empty for GDS")
+      if tensor.device != gpu_device:
+        raise ValueError("all GPU tensors must be on the same CUDA device for GDS")
+    if self.gpu_device_id is not None and gpu_device.index != self.gpu_device_id:
+      raise ValueError(
+        "gpu_device_id does not match the CUDA device of GPU storage tensors"
+      )
+
+    self.file_paths = ssd_storage_handle.get_file_list()
+    if len(self.file_paths) * ssd_storage_handle.num_blocks_per_file < self.ssd_num_blocks:
+      raise ValueError("SSD storage files do not cover the declared SSD block range")
+
     it = self.dtype.itemsize
     self.slice_bytes = gpu_layout.get_chunk_size() * it
     if self.gpu_device_id is not None:
@@ -668,7 +688,7 @@ class GPUDirectSSDTransferWorker(TransferWorkerBase):
       slice_bytes=self.slice_bytes,
       gpu_block_step=gpu_layout.get_block_stride() * it,
       gpu_kv_pitch=gpu_layout.get_kv_stride() * it,
-      file_paths=ssd_storage_handle.get_file_list(),
+      file_paths=self.file_paths,
     )
 
   def is_available(self) -> bool:
@@ -678,7 +698,7 @@ class GPUDirectSSDTransferWorker(TransferWorkerBase):
                      src_block_ids: torch.Tensor,
                      dst_block_ids: torch.Tensor,
                      transfer_type: TransferType,
-                     **kwargs: Any):
+                     **kwargs: Any) -> None:
     if transfer_type not in [TransferType.D2DISK, TransferType.DISK2D]:
       raise ValueError(f"invalid transfer type: {transfer_type}")
     if src_block_ids.dtype != torch.int64 or dst_block_ids.dtype != torch.int64:
@@ -688,7 +708,7 @@ class GPUDirectSSDTransferWorker(TransferWorkerBase):
     if src_block_ids.dim() != 1 or dst_block_ids.dim() != 1:
       raise ValueError("src_block_ids and dst_block_ids must be 1D tensors")
     if src_block_ids.numel() == 0:
-      return True
+      return
 
     if transfer_type == TransferType.D2DISK:
       src_num_blocks = self.gpu_num_blocks
@@ -703,12 +723,14 @@ class GPUDirectSSDTransferWorker(TransferWorkerBase):
       raise ValueError(f"src_block_ids out of range [0, {src_num_blocks})")
     if dst_block_ids.min().item() < 0 or dst_block_ids.max().item() >= dst_num_blocks:
       raise ValueError(f"dst_block_ids out of range [0, {dst_num_blocks})")
-
     src_block_ids = src_block_ids.to(device="cpu", dtype=torch.int64).contiguous()
     dst_block_ids = dst_block_ids.to(device="cpu", dtype=torch.int64).contiguous()
-    return self.gds_ctx.transfer_blocks(src_block_ids, dst_block_ids, is_read)
+    ok = self.gds_ctx.transfer_blocks(src_block_ids, dst_block_ids, is_read)
+    if not ok:
+      raise RuntimeError(f"GDSIOCTX.transfer_blocks failed ({transfer_type})")
 
   def launch_transfer(self, transfer_op: WorkerTransferOp) -> bool:
     src_block_ids, dst_block_ids = self.get_transfer_block_ids(transfer_op)
-    return bool(self._transfer_impl(src_block_ids, dst_block_ids, transfer_op.transfer_type))
+    self._transfer_impl(src_block_ids, dst_block_ids, transfer_op.transfer_type)
+    return True
 

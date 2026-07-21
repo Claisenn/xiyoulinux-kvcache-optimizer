@@ -17,7 +17,7 @@ from miniflex.common.transfer import (
   TransferType,
 )
 from miniflex.transfer.scheduler import TransferScheduler
-from miniflex.transfer.worker import GPUCPUTransferWorker, GPUDirectSSDTransferWorker, SSDCPUTransferWorker, WorkerHandle
+from miniflex.transfer.worker import GDSTransferWorker, GPUCPUTransferWorker, SSDCPUTransferWorker, WorkerHandle
 
 
 class TransferEngine:
@@ -124,26 +124,26 @@ class TransferEngine:
       )
       self._transfer_worker[TransferType.DISK2H] = self._disk2h_worker
 
-      # Optional GDS direct SSD<->GPU workers.  Only created when
-      # CacheConfig.enable_gds is on; the worker itself reports
-      # is_available()==False when cuFile is missing, in which case we do not
-      # register the D2DISK/DISK2D types and the planner keeps using the CPU
-      # two-hop path.
+      # Optional GDS direct SSD<->GPU workers. They are created only when
+      # CacheConfig.enable_gds is on. This registers worker endpoints only;
+      # the planner decides whether to emit direct operations, and the worker
+      # itself does not perform a CPU two-hop fallback.
       if getattr(self.cache_config, "enable_gds", False):
-        self._d2disk_worker = GPUDirectSSDTransferWorker.create_worker(
+        self._d2disk_worker = GDSTransferWorker.create_worker(
           self._mp_ctx,
           self._finished_op_queue,
           self._pin_buffer.get_buffer(),
           self._gpu_handle,
           self._ssd_handle,
         )
-        self._disk2d_worker = GPUDirectSSDTransferWorker.create_worker(
+        self._disk2d_worker = GDSTransferWorker.create_worker(
           self._mp_ctx,
           self._finished_op_queue,
           self._pin_buffer.get_buffer(),
           self._gpu_handle,
           self._ssd_handle,
         )
+
         self._transfer_worker[TransferType.D2DISK] = self._d2disk_worker
         self._transfer_worker[TransferType.DISK2D] = self._disk2d_worker
 
