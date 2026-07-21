@@ -1,9 +1,8 @@
-"""Tests for the GDS (GPU Direct Storage) wiring.
+"""Configuration and type-registration tests for GDS wiring.
 
-These tests run on the CPU-only build where miniflex._C's GDSIOCTX is a stub
-reporting is_available()==False; they verify the configuration plumbing,
-transfer-type registration, and the CPU two-hop fallback contract.  Real GDS
-transfer correctness is exercised on a GPU machine with cuFile installed.
+They intentionally cover only public configuration and transfer-op validation.
+Planner routing and CPU two-hop fallback are outside this PR; direct GDS I/O is
+covered separately on a CUDA machine with cuFile.
 
 Run: PYTHONPATH=pysrc:test python -m pytest test/gds_worker_test.py -q
 """
@@ -19,7 +18,8 @@ def test_gds_transfer_types_exist():
 
 
 def test_gds_ops_are_valid_transfer_ops():
-  # GDS op types must pass TransferOp validation (be schedulable).
+  # These direct types must pass TransferOp validation. This does not imply
+  # that the planner emits them yet.
   graph = TransferOpGraph()
   op = TransferOp(
     transfer_type=TransferType.D2DISK,
@@ -56,7 +56,6 @@ def test_default_gds_disabled():
 
 
 def test_gds_env_override(monkeypatch):
-  import importlib
   import miniflex.integration.config as icfg
   monkeypatch.setenv("MINIFLEX_ENABLE_GDS", "1")
   overrides = icfg._env_overrides()
