@@ -1,5 +1,7 @@
 #include <torch/extension.h>
 
+#include <stdexcept>
+
 #include "gds_io.h"
 #include "ssd_io_uring.h"
 #include "transfer.cuh"
@@ -45,14 +47,39 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                throw std::invalid_argument(
                    "gpu_tensors length must equal layer_num");
              }
-             std::vector<char*> gpu_ptrs;
-             gpu_ptrs.reserve(gpu_tensors.size());
-             for (auto& t : gpu_tensors) {
-               gpu_ptrs.push_back(static_cast<char*>(t.data_ptr()));
+             if (gpu_tensors.empty()) {
+               throw std::invalid_argument("gpu_tensors must not be empty");
              }
+
+             int gpu_device = -1;
+             for (size_t layer = 0; layer < gpu_tensors.size(); ++layer) {
+               const auto& tensor = gpu_tensors[layer];
+               if (!tensor.defined() || !tensor.is_cuda()) {
+                 throw std::invalid_argument(
+                     "all gpu_tensors must be defined CUDA tensors");
+               }
+               if (!tensor.is_contiguous()) {
+                 throw std::invalid_argument(
+                     "all gpu_tensors must be contiguous for GDS");
+               }
+               if (tensor.numel() == 0) {
+                 throw std::invalid_argument(
+                     "all gpu_tensors must be non-empty for GDS");
+               }
+
+               const int tensor_device = tensor.get_device();
+               if (layer == 0) {
+                 gpu_device = tensor_device;
+               } else if (tensor_device != gpu_device) {
+                 throw std::invalid_argument(
+                     "all gpu_tensors must be on the same CUDA device");
+               }
+             }
+
              return std::make_unique<miniflex::GDSIOCTX>(
-                 blocks_per_file, gpu_ptrs, layer_num, kv_dim, gpu_num_blocks,
-                 slice_bytes, gpu_block_step, gpu_kv_pitch, file_paths);
+                 blocks_per_file, std::move(gpu_tensors), layer_num, kv_dim,
+                 gpu_num_blocks, slice_bytes, gpu_block_step, gpu_kv_pitch,
+                 std::move(file_paths));
            }),
            pybind11::arg("blocks_per_file"),
            pybind11::arg("gpu_tensors"),
